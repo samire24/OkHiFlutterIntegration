@@ -1,0 +1,291 @@
+import "dart:io";
+
+import "package:auto_size_text/auto_size_text.dart";
+import 'package:flutter/material.dart';
+import "package:flutter_bloc/flutter_bloc.dart";
+import "package:flutter_riverpod/flutter_riverpod.dart";
+import 'package:permission_handler/permission_handler.dart';
+import 'package:okhi_flutter/models/okhi_usage_type.dart';
+import 'package:okhi_flutter/okhi_flutter.dart';
+import "package:poketmoni/commons/custom_button.dart";
+import "package:poketmoni/home/wallpaper/widgets/wall_paper_background.dart";
+import "package:poketmoni/l10n/l10n.dart";
+import "package:poketmoni/themes/app_colors.dart";
+import "package:poketmoni/utils/app_toast/app_error_toast.dart";
+import "package:auto_size_text/auto_size_text.dart";
+import 'package:flutter/material.dart';
+import "package:flutter_bloc/flutter_bloc.dart";
+import "package:flutter_riverpod/flutter_riverpod.dart";
+import 'package:permission_handler/permission_handler.dart';
+import 'package:okhi_flutter/models/okhi_usage_type.dart';
+import 'package:okhi_flutter/okhi_flutter.dart';
+import "package:poketmoni/commons/custom_button.dart";
+import "package:poketmoni/home/wallpaper/widgets/wall_paper_background.dart";
+import "package:poketmoni/l10n/l10n.dart";
+import "package:poketmoni/themes/app_colors.dart";
+import "package:poketmoni/utils/app_toast/app_error_toast.dart";
+import "package:poketmoni/utils/app_toast/app_success_toast.dart";
+import "package:poketmoni/utils/local_storage.dart";
+
+import "../../../../account/provider/account_provider.dart";
+import "../../../../configs/app/providers/theme_mode_provider.dart";
+import "../../../../gen/assets.gen.dart";
+import "../../../../l10n/app_localizations.dart";
+import "../../../../partner/providers/partner_provider.dart";
+import "../../../../themes/app_dimens.dart";
+import "../../../../user/providers/user_provider.dart";
+import "../../../../utils/local_storage_keys.dart";
+import "../../../../utils/navigation_service.dart";
+import "../../../bloc/join_bloc.dart";
+import "../../../componets/account_constant.dart";
+import "../../../componets/back_icon.dart";
+import "gold_account_pending_page.dart";
+
+void main() {
+  runApp(const MyApp());
+}
+
+class MyApp extends StatefulWidget {
+  const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  bool _launch = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final config = OkHiAppConfiguration(
+       branchId: const String.fromEnvironment("BRANCHID"),
+        clientKey: const String.fromEnvironment("CLIENTKEY"),
+        env: OkHiEnv.prod, // or OkHiEnv.sandbox for testing
+        notification: OkHiAndroidNotification(
+          title: "Verification in progress",
+          text: "Verifying your address",
+          channelId: "okhi",
+          channelName: "OkHi",
+          channelDescription: "Verification alerts",
+      ),
+    );
+    OkHi.initialize(config);
+  }
+
+   @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context).textTheme;
+    final l10n = context.l10n;
+    return MaterialApp(
+      home: Scaffold(
+        resizeToAvoidBottomInset: false,
+        appBar: AppBar(
+          backgroundColor: AppColors.pBl100,
+          title: Text(
+            "Address Verification",
+            style: theme.bodyLarge!.copyWith(
+                color: AppColors.pW100,
+                fontSize: 20,
+                fontWeight: FontWeight.bold),
+          ),
+        ),
+        body: _renderBody(l10n),
+      ),
+    );
+  }
+
+  Widget _renderBody(AppLocalizations? l10n) {
+    if (_launch) {
+      return OkHiLocationManager(
+        user: _createOkHiUser(),
+        onCloseRequest: _handleOnClose,
+        onError: _handleOnError,
+        onSucess: _handleOnSuccess,
+        configuration: OkHiLocationManagerConfiguration(
+          locationId: _locationId,
+          usageTypes: _usageTypes,
+          color: "#000000",
+          withWorkAddressType: false,
+          withHomeAddressType: true, logoUrl: "https://pocketmonibank.com/assets/images/logo.svg"
+        ),
+      );
+    }
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: double.infinity,
+              child: CustomButton(
+                onPressed: _handleCreateAnAddressPress,
+                title: "Start Address verification",
+              ),
+            ),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: CustomButtonWithoutShade(
+                onPressed: _handleVerifySavedAddressPress,
+                title: "Verify saved address",
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  _handleVerifySavedAddressPress() async {
+    final savedLocationId = await LocalStorageData.fetchOkhiLocationId();
+    if (savedLocationId != null) {
+      _locationId = savedLocationId;
+      _usageTypes = [UsageType.digitalVerification];
+      setState(() {
+        _launch = true;
+      });
+    } else {
+      AppErrorToast().error(description: "No address saved");
+    }
+  }
+
+
+  Future<void> _checkLocationPermissionAndLaunch() async {
+    setState(() {
+      _launch = true;
+    });
+
+    if (Platform.isAndroid) {
+      final status = await Permission.location.status;
+
+      if (status.isDenied || status.isPermanentlyDenied) {
+        final result = await Permission.locationWhenInUse.request();
+        if (!result.isGranted) {
+          AppErrorToast().error(
+            description: "Location permission is required to continue.",
+          );
+          return;
+        }
+      }
+
+    } else if (Platform.isIOS) {
+      setState(() {
+        _isCheckingPermission = true;
+      });
+      try {
+        final result = await OkHi.requestLocationPermission();
+        if (result) {
+          setState(() {
+            _launch = true;
+            _isCheckingPermission = false;
+          });
+        } else {
+          setState(() {
+            _isCheckingPermission = false;
+          });
+          _showLocationPermissionDialog();
+        }
+      } catch (e) {
+        setState(() {
+          _isCheckingPermission = false;
+        });
+        print('Error: $e');
+        AppErrorToast().error(description: "Error checking location permission");
+      }
+    }
+  }
+
+  void _showLocationPermissionDialog() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text("Location Permission Required"),
+        content: const Text(
+            "To verify your address, please enable location services to 'always' for this app in Settings."),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              setState(() {
+                _isCheckingPermission = false;
+              });
+            },
+            child: const Text("Cancel"),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              openAppSettings();
+              setState(() {
+                _isCheckingPermission = false;
+              });
+            },
+            child: const Text("Open Settings"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _handleCreateAnAddressPress() async {
+    await _checkLocationPermissionAndLaunch();
+  }
+  OkHiUser _createOkHiUser() {
+    final partner = ref.read(partnerProvider).partnerDetails;
+    final accountState = ref.watch(accountProvider);
+
+    return OkHiUser(
+      phone: accountState.accountDetails?.phoneNumber.toString() ?? "+2547..",
+      firstName: partner?.firstName ?? " ",
+      lastName: partner?.lastName ?? " ",
+      appUserId: partner?.userId.toString() ?? " ",
+      email: partner?.userEmail ?? " ",
+    );
+  }
+
+  _handleOnSuccess(OkHiLocationManagerResponse response) async {
+    final l10n = context.l10n;
+    final theme = Theme.of(context).textTheme;
+    setState(() {
+      _launch = false;
+    });
+    final String locationId = await response.startVerification(null);
+    await LocalStorageData.saveOkhiLocationId(locationId);
+
+    AppSuccessToast().success(description: "Address saved and will be verified soonest");
+    final user = ref.read(userProvider).userModel?.data;
+    final accountType = (user?.country != null &&
+        user?.state != null &&
+        user?.city != null &&
+        user?.address != null &&
+        user?.addressVerified == true)
+        ? AccountTypeEnums.gold
+        : AccountTypeEnums.silver;
+    AccountConstant.accountTypeSelected = accountType;
+    ref
+        .read(partnerProvider.notifier)
+        .fetchPartnerDetails();
+    await pushReplacementTo(GoldAccountPendingPage(
+      logo: Assets.account.goldensilver.path,
+      title: l10n!.youAreStillSilverOnAccount,
+      description: l10n.youWillBePlaced,
+      name: user?.firstName ?? " ",
+      type: accountType,
+      fromOnboarding: widget.fromOnboarding,
+    ));
+    print("started verification for $locationId");
+  }
+
+  _handleOnError(OkHiException exception) {
+    AppErrorToast().error(description: exception.message ?? "Something went wrong");
+  }
+
+  _handleOnClose() {
+    setState(() {
+      _launch = false;
+    });
+  }
+}
+
